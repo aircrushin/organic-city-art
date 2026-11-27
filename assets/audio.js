@@ -170,6 +170,44 @@
       });
     }
 
+    function triggerSupernova(sample, normalizedX, power) {
+      if (!ensureContext()) return;
+      const pan = normalizedX * 2 - 1;
+      const base = hueToFrequency(sample.h, sample.l, 0);
+      const ratios = [0.5, 1, 1.25, 1.498, 1.875, 2.0, 2.5];
+      ratios.forEach((ratio, idx) => {
+        window.setTimeout(() => {
+          playTone(base * ratio, {
+            duration: 1.8 + idx * 0.18,
+            volume: Math.min(0.14, (0.06 + power * 0.06) / (1 + idx * 0.16)),
+            pan: clampPan(pan + (idx - 3) * 0.18),
+            waveform: idx === 0 ? "triangle" : "sine",
+            attack: 0.025,
+            shimmer: 0.65
+          });
+        }, idx * 45);
+      });
+    }
+
+    function triggerEcho(sample, normalizedX) {
+      if (!ensureContext()) return;
+      const pan = normalizedX * 2 - 1;
+      const freq = hueToFrequency(sample.h, sample.l, -1);
+      playTone(freq * 1.5, {
+        glideTo: freq,
+        duration: 1.9,
+        volume: 0.14,
+        pan,
+        waveform: "triangle",
+        attack: 0.08,
+        shimmer: 0.55
+      });
+    }
+
+    function clampPan(val) {
+      return Math.max(-0.85, Math.min(0.85, val));
+    }
+
     function triggerGlideSpark(sample, normalizedX, speedFactor) {
       if (!enabled || !unlocked || !audioCtx) return;
       const nowMs = performance.now();
@@ -219,6 +257,8 @@
       isEnabled: () => enabled,
       setEnabled,
       triggerResonance,
+      triggerSupernova,
+      triggerEcho,
       triggerGlideSpark,
       updateAtmosphere
     };

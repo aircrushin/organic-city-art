@@ -1,9 +1,8 @@
 (function () {
   "use strict";
 
-  const MODE_INDEX = { awaken: 0, liquid: 1, portal: 2, bloom: 3 };
-  const MAX_RIPPLES = 8;
-  const MAX_TRAILS = 12;
+  const MAX_RIPPLES = 10;
+  const MAX_TRAILS = 18;
   const SAMPLE_W = 64;
   const SAMPLE_H = 36;
 
@@ -83,9 +82,7 @@
     const useMipmaps = config.useMipmaps ?? true;
     const version = config.version ?? 1;
     let speed = config.speed ?? 9;
-    const maxSpeed = config.maxspeed ?? 36;
-
-    let currentMode = "awaken";
+    const maxSpeed = config.maxspeed ?? 45;
     const keyboardMovementEnabled = config.keyboardmovementenabled ?? true;
     const visibleSteps = config.visiblesteps ?? 3;
     const randomStart = config.randomstart ?? false;
@@ -137,6 +134,8 @@
       isInside: false,
       isDown: false,
       hold: 0,
+      holdDuration: 0,
+      idleTime: 0,
       sample: { r: 140, g: 190, b: 255, h: 215, s: 0.85, l: 0.72, edge: 0.4 }
     };
 
@@ -144,12 +143,15 @@
     let panY = 0;
     let targetPanX = 0;
     let targetPanY = 0;
+    let warpEnergy = 0;
     let lastActiveDrawList = [];
 
     const ripples = [];
     const trails = [];
     const spores = [];
-    const rings = [];
+    const blooms = [];
+    const ribbonPoints = [];
+    const tendrils = [];
     const rippleUniformData = new Float32Array(MAX_RIPPLES * 4);
     const trailUniformData = new Float32Array(MAX_TRAILS * 4);
 
@@ -270,7 +272,7 @@
         uniform vec2 uPointerVel;
         uniform float uPointerActive;
         uniform float uHoldAmount;
-        uniform int uMode;
+        uniform float uWarpEnergy;
         uniform vec4 uRipples[${MAX_RIPPLES}];
         uniform vec4 uTrails[${MAX_TRAILS}];
 
@@ -305,7 +307,7 @@
         }
 
         float detectEdge(vec2 uv) {
-          vec2 d = uTexelSize * 1.65;
+          vec2 d = uTexelSize * 1.5;
           float tl = luma(sampleScene(uv + vec2(-d.x, -d.y)));
           float tc = luma(sampleScene(uv + vec2(0.0, -d.y)));
           float tr = luma(sampleScene(uv + vec2(d.x, -d.y)));
@@ -316,141 +318,154 @@
           float br = luma(sampleScene(uv + vec2(d.x, d.y)));
           float gx = -tl - 2.0 * ml - bl + tr + 2.0 * mr + br;
           float gy = -tl - 2.0 * tc - tr + bl + 2.0 * bc + br;
-          return clamp(sqrt(gx * gx + gy * gy) * 1.85, 0.0, 1.0);
+          return clamp(sqrt(gx * gx + gy * gy) * 1.75, 0.0, 1.0);
+        }
+
+        vec3 softGlowAdd(vec3 baseColor, vec3 glowColor, float amount) {
+          vec3 added = glowColor * amount;
+          return baseColor + added * (vec3(1.0) - baseColor * 0.72);
         }
 
         void main(void) {
           vec2 resolution = max(uResolution, vec2(1.0));
           float aspect = resolution.x / resolution.y;
           vec2 screenUv = vTextureCoord;
-          vec2 uv = screenUv;
 
-          // Pointer-centered living field
+          vec2 centerDelta = screenUv - vec2(0.5);
+          vec2 centerAspect = vec2(centerDelta.x * aspect, centerDelta.y);
+          float centerDist = length(centerAspect);
+
           vec2 pDelta = screenUv - uPointer;
           vec2 pAspect = vec2(pDelta.x * aspect, pDelta.y);
           float pDist = length(pAspect);
           vec2 pDir = pDist > 0.0001 ? pAspect / pDist : vec2(0.0, 1.0);
           vec2 pTan = vec2(-pDir.y, pDir.x);
-          float pointerField = exp(-pDist * pDist * 24.0) * uPointerActive;
-          float wideField = exp(-pDist * pDist * 9.0) * uPointerActive;
-          float velMag = clamp(length(uPointerVel) * 28.0, 0.0, 1.8);
+          float pAngle = atan(pAspect.y, pAspect.x);
+
+          float nearField = exp(-pDist * pDist * 26.0) * uPointerActive;
+          float wideField = exp(-pDist * pDist * 8.5) * uPointerActive;
+          float velMag = clamp(length(uPointerVel) * 32.0, 0.0, 2.0);
 
           vec2 warp = vec2(0.0);
           float energyGlow = 0.0;
           float chromaShift = 0.0;
+          float holdCaustic = 0.0;
 
-          // Mode 0: Awaken (organic breathing + edge bioluminescence)
-          // Mode 1: Liquid (fluid silk displacement + glossy ripples)
-          // Mode 2: Portal (gravitational time lens + vortex swirl)
-          // Mode 3: Bloom (warm glowing botanical aura + gentle shimmer)
-          float breathe = sin(uTime * 2.4 - pDist * 18.0);
-          if (uMode == 0) {
-            warp += vec2(pDir.x / aspect, pDir.y) * (0.006 * breathe * pointerField);
-            warp -= uPointerVel * pointerField * 0.45;
-            energyGlow += wideField * (0.55 + 0.35 * velMag);
-            chromaShift += pointerField * (0.0018 + velMag * 0.0025);
-          } else if (uMode == 1) {
-            float liquidWave = sin(pDist * 30.0 - uTime * 5.2);
-            warp += vec2(pDir.x / aspect, pDir.y) * (0.017 * liquidWave * wideField);
-            warp += vec2(pTan.x / aspect, pTan.y) * (0.011 * cos(pDist * 20.0 + uTime * 3.0) * wideField);
-            warp -= uPointerVel * wideField * 1.1;
-            energyGlow += wideField * (0.55 + 0.5 * velMag);
-            chromaShift += wideField * (0.004 + velMag * 0.0045);
-          } else if (uMode == 2) {
-            float swirlStrength = (0.022 + 0.068 * uHoldAmount) * exp(-pDist * pDist * 11.0) * max(uPointerActive, uHoldAmount);
-            warp += vec2(pTan.x / aspect, pTan.y) * swirlStrength;
-            warp -= vec2(pDir.x / aspect, pDir.y) * (0.028 * (0.35 + uHoldAmount) * exp(-pDist * pDist * 16.0) * max(uPointerActive, uHoldAmount));
-            energyGlow += exp(-pDist * pDist * 10.0) * (0.55 + uHoldAmount * 0.9);
-            chromaShift += exp(-pDist * pDist * 12.0) * (0.004 + uHoldAmount * 0.009);
-          } else {
-            warp += vec2(pDir.x / aspect, pDir.y) * (0.008 * sin(pDist * 22.0 - uTime * 3.5) * wideField);
-            energyGlow += exp(-pDist * pDist * 7.5) * uPointerActive * 0.95;
-            chromaShift += pointerField * 0.0028;
-          }
+          // Living silk-water field & bioluminescent awakening around pointer
+          float silkWave = sin(pDist * 28.0 - uTime * 4.2 + sin(pAngle * 3.0 + uTime * 0.9));
+          float curlFlow = cos(pDist * 18.0 + uTime * 2.6 - pAngle * 2.0);
+          warp += vec2(pDir.x / aspect, pDir.y) * (0.0095 * silkWave * wideField);
+          warp += vec2(pTan.x / aspect, pTan.y) * (0.007 * curlFlow * wideField * (0.5 + velMag * 0.7));
+          warp -= uPointerVel * wideField * 0.85;
+          energyGlow += wideField * (0.62 + 0.45 * velMag);
+          chromaShift += nearField * (0.0026 + velMag * 0.0042);
 
-          // Press-and-hold gravitational lens across all modes
+          // Press-and-hold living spacetime vortex & kaleidoscopic time-lens
           if (uHoldAmount > 0.001) {
-            float holdLens = exp(-pDist * pDist * 14.0) * uHoldAmount;
-            warp -= vec2(pDir.x / aspect, pDir.y) * (0.032 * holdLens);
-            warp += vec2(pTan.x / aspect, pTan.y) * (0.022 * holdLens * sin(uTime * 1.8 + pDist * 12.0));
-            energyGlow += holdLens * 0.85;
-            chromaShift += holdLens * 0.006;
+            float holdCore = exp(-pDist * pDist * 13.5) * uHoldAmount;
+            float holdHalo = exp(-pDist * pDist * 5.2) * uHoldAmount;
+            float floralSym = 0.5 + 0.5 * cos(pAngle * 6.0 - uTime * 2.4 + pDist * 16.0);
+            float twist = (0.058 + 0.024 * floralSym) * holdCore;
+            warp += vec2(pTan.x / aspect, pTan.y) * twist;
+            warp -= vec2(pDir.x / aspect, pDir.y) * (0.036 * holdCore * (0.7 + 0.3 * sin(uTime * 3.2 - pDist * 14.0)));
+            energyGlow += holdHalo * 0.82;
+            chromaShift += holdCore * 0.0095;
+            float horizon = exp(-pow((pDist - (0.145 + 0.045 * uHoldAmount)) / 0.032, 2.0)) * uHoldAmount;
+            holdCaustic = horizon * (0.55 + 0.45 * floralSym);
           }
 
-          // Zoom-space-locked fluid trails
+          // Zoom-space-locked fluid silk trails
           for (int i = 0; i < ${MAX_TRAILS}; i++) {
             vec4 tr = uTrails[i];
             if (tr.z > 0.01) {
               vec2 td = screenUv - tr.xy;
               vec2 ta = vec2(td.x * aspect, td.y);
               float dist = length(ta);
-              float spread = (uMode == 1) ? 44.0 : 62.0;
-              float falloff = exp(-dist * dist * spread) * tr.z;
+              float falloff = exp(-dist * dist * 48.0) * tr.z;
               vec2 tDir = dist > 0.0001 ? ta / dist : vec2(0.0, 1.0);
               vec2 tTan = vec2(-tDir.y, tDir.x);
-              float amp = (uMode == 1 ? 0.016 : 0.0085) * tr.w;
-              warp += vec2(tTan.x / aspect, tTan.y) * (falloff * amp * sin(uTime * 4.0 + dist * 26.0));
-              warp += vec2(tDir.x / aspect, tDir.y) * (falloff * amp * 0.55);
-              energyGlow += falloff * 0.42;
-              chromaShift += falloff * 0.0024;
+              float amp = 0.0145 * tr.w;
+              warp += vec2(tTan.x / aspect, tTan.y) * (falloff * amp * sin(uTime * 4.4 + dist * 28.0));
+              warp += vec2(tDir.x / aspect, tDir.y) * (falloff * amp * 0.52);
+              energyGlow += falloff * 0.46;
+              chromaShift += falloff * 0.0032;
             }
           }
 
-          // Zoom-space-locked resonant click ripples
+          // Zoom-space-locked dual-harmonic shockwaves (positive = expand, negative = implode)
           float rippleGlow = 0.0;
           for (int i = 0; i < ${MAX_RIPPLES}; i++) {
             vec4 rp = uRipples[i];
-            if (rp.w > 0.01) {
+            float strength = abs(rp.w);
+            if (strength > 0.01) {
+              float dirSign = rp.w >= 0.0 ? 1.0 : -1.0;
               vec2 rd = screenUv - rp.xy;
               vec2 ra = vec2(rd.x * aspect, rd.y);
               float dist = length(ra);
-              float waveRadius = rp.z * (uMode == 1 ? 0.58 : 0.46);
-              float bandWidth = 0.055 + rp.z * 0.055;
+              float waveRadius = dirSign > 0.0 ? (rp.z * 0.58) : max(0.0, 0.52 - rp.z * 0.54);
+              float bandWidth = 0.048 + rp.z * 0.052;
               float ringDelta = dist - waveRadius;
-              float envelope = exp(-(ringDelta * ringDelta) / (bandWidth * bandWidth)) * rp.w;
-              float wave = sin(ringDelta * 68.0 - uTime * 3.0) * envelope;
+              float envelope = exp(-(ringDelta * ringDelta) / (bandWidth * bandWidth)) * strength;
+              float echoDelta = dist - waveRadius * 0.72;
+              float echoEnv = exp(-(echoDelta * echoDelta) / (bandWidth * bandWidth * 0.65)) * strength * 0.48;
+              float totalEnv = envelope + echoEnv;
+              float wave = sin(ringDelta * 72.0 - uTime * 3.6 * dirSign) * envelope + sin(echoDelta * 54.0) * echoEnv * 0.6;
               vec2 rDir = dist > 0.0001 ? ra / dist : vec2(0.0, 1.0);
-              float pushAmp = (uMode == 1 ? 0.028 : 0.019);
-              warp += vec2(rDir.x / aspect, rDir.y) * (wave * pushAmp);
-              rippleGlow += envelope;
-              chromaShift += envelope * 0.0065;
+              warp += vec2(rDir.x / aspect, rDir.y) * (wave * 0.026 * dirSign);
+              rippleGlow += totalEnv;
+              chromaShift += totalEnv * 0.0075;
             }
           }
 
-          uv = clampUv(screenUv + warp);
+          // High-speed scroll warp prism pull
+          if (uWarpEnergy > 0.01) {
+            vec2 cDir = centerDist > 0.0001 ? centerAspect / centerDist : vec2(0.0, 1.0);
+            warp -= vec2(cDir.x / aspect, cDir.y) * (centerDist * 0.045 * uWarpEnergy);
+            chromaShift += centerDist * 0.012 * uWarpEnergy;
+          }
 
-          // Chromatic prism sampling along distortion direction
+          vec2 uv = clampUv(screenUv + warp);
+
           vec2 chromaDir = length(warp) > 0.00005 ? normalize(warp) : vec2(pDir.x / aspect, pDir.y);
           vec3 sceneColor;
-          if (chromaShift > 0.0004) {
+          if (chromaShift > 0.00035) {
+            float cShift = min(chromaShift, 0.018);
             sceneColor = vec3(
-              sampleScene(uv + chromaDir * chromaShift).r,
+              sampleScene(uv + chromaDir * cShift).r,
               sampleScene(uv).g,
-              sampleScene(uv - chromaDir * chromaShift).b
+              sampleScene(uv - chromaDir * cShift).b
             );
           } else {
             sceneColor = sampleScene(uv);
           }
 
-          // Real-time painted edge detection -> makes brushstrokes, windows & plants light up!
+          // Subtle radial warp-speed echo when scrolling fast
+          if (uWarpEnergy > 0.04) {
+            vec2 radialPull = (vec2(0.5) - uv) * 0.022 * uWarpEnergy;
+            vec3 echoA = sampleScene(uv + radialPull);
+            vec3 echoB = sampleScene(uv + radialPull * 2.0);
+            sceneColor = mix(sceneColor, (sceneColor + echoA + echoB) * 0.3333, min(0.55, uWarpEnergy * 0.6));
+          }
+
+          // Real-time painted edge bioluminescence with jewel-like soft highlight compression
           float edge = detectEdge(uv);
-          float activeMask = clamp(energyGlow + rippleGlow * 1.15, 0.0, 1.8);
-          vec3 awakenedTint = hueShift(max(sceneColor, vec3(0.18, 0.24, 0.34)), 0.55 + uTime * 0.4 + pDist * 2.2);
-          float edgeGlowAmount = edge * activeMask * (uMode == 3 ? 0.78 : 0.56);
+          float ambientBreath = (0.14 + 0.08 * sin(uTime * 1.4 - centerDist * 10.0)) * exp(-centerDist * centerDist * 3.0);
+          float activeMask = clamp(energyGlow + rippleGlow * 1.15 + ambientBreath, 0.0, 1.75);
+
+          vec3 vividBase = mix(vec3(luma(sceneColor)), sceneColor, 1.45);
+          vec3 awakenedTint = hueShift(max(vividBase, vec3(0.16, 0.26, 0.38)), 0.75 + uTime * 0.48 + pDist * 2.8);
+          vec3 prismTint = hueShift(awakenedTint, 1.65 + centerDist * 2.0);
 
           vec3 color = sceneColor;
-          // Warm subtle vibrancy lift where user awakens the painting
           float lum = luma(color);
-          color = mix(color, mix(vec3(lum), color, 1.24) + vec3(0.03, 0.035, 0.05), clamp(activeMask * 0.42, 0.0, 0.65));
-          // Bioluminescent painted edge shimmer
-          color += awakenedTint * edgeGlowAmount;
-          // Subtle harmonic sheen along expanding ripples
-          color += (awakenedTint * 0.65 + vec3(0.22, 0.26, 0.35)) * rippleGlow * (0.14 + 0.32 * edge);
+          color = mix(color, mix(vec3(lum), color, 1.28), clamp(activeMask * 0.55, 0.0, 0.72));
+          color = softGlowAdd(color, awakenedTint, edge * activeMask * 0.85);
+          color = softGlowAdd(color, mix(awakenedTint, prismTint, 0.5), rippleGlow * (0.24 + 0.5 * edge));
 
-          if (uMode == 2 && uHoldAmount > 0.01) {
-            float portalRing = exp(-pow((pDist - 0.14 * (0.6 + 0.4 * uHoldAmount)) / 0.035, 2.0)) * uHoldAmount;
-            color = mix(color, hueShift(color, uTime * 0.7 + pDist * 4.0), exp(-pDist * pDist * 18.0) * uHoldAmount * 0.45);
-            color += awakenedTint * portalRing * 0.55;
+          if (uHoldAmount > 0.01) {
+            float vortexZone = exp(-pDist * pDist * 14.0) * uHoldAmount;
+            color = mix(color, hueShift(color, uTime * 0.65 + pDist * 5.0), vortexZone * 0.38);
+            color = softGlowAdd(color, prismTint, holdCaustic * 0.95);
           }
 
           gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
@@ -493,7 +508,7 @@
         uPointerVel: gl.getUniformLocation(fxProgram, "uPointerVel"),
         uPointerActive: gl.getUniformLocation(fxProgram, "uPointerActive"),
         uHoldAmount: gl.getUniformLocation(fxProgram, "uHoldAmount"),
-        uMode: gl.getUniformLocation(fxProgram, "uMode"),
+        uWarpEnergy: gl.getUniformLocation(fxProgram, "uWarpEnergy"),
         uRipples: gl.getUniformLocation(fxProgram, "uRipples[0]"),
         uTrails: gl.getUniformLocation(fxProgram, "uTrails[0]")
       };
@@ -784,30 +799,52 @@
       return fallbackSample(nx, ny, position);
     }
 
-    function spawnSpores(nx, ny, sample, count, burstSpeed) {
+    function spawnSpores(nx, ny, sample, count, burstSpeed, kind = "mixed") {
       for (let i = 0; i < count; i++) {
-        if (spores.length > 220) spores.shift();
+        if (spores.length > 320) spores.shift();
         const angle = Math.random() * Math.PI * 2;
-        const spd = (0.015 + Math.random() * 0.08) * burstSpeed;
-        const hueJitter = (Math.random() - 0.5) * 34;
+        const spd = (0.018 + Math.random() * 0.11) * burstSpeed;
+        const hueJitter = (Math.random() - 0.5) * 44;
+        const isPetal = kind === "petal" || (kind === "mixed" && Math.random() > 0.45);
         spores.push({
-          x: nx + (Math.random() - 0.5) * 0.012,
-          y: ny + (Math.random() - 0.5) * 0.012,
+          x: nx + (Math.random() - 0.5) * 0.014,
+          y: ny + (Math.random() - 0.5) * 0.014,
           vx: Math.cos(angle) * spd,
           vy: Math.sin(angle) * spd,
-          size: 1.8 + Math.random() * (currentMode === "bloom" ? 5.2 : 3.4),
+          size: isPetal ? 2.4 + Math.random() * 4.4 : 1.5 + Math.random() * 3.0,
           h: (sample.h + hueJitter + 360) % 360,
-          s: clamp(sample.s + 0.22, 0.55, 1),
-          l: clamp(sample.l + 0.16, 0.55, 0.88),
+          s: clamp(sample.s + 0.26, 0.6, 1),
+          l: clamp(sample.l + 0.18, 0.58, 0.88),
           life: 1,
-          decay: 0.22 + Math.random() * 0.28,
+          decay: 0.19 + Math.random() * 0.26,
           phase: Math.random() * Math.PI * 2,
-          petal: currentMode === "bloom" && Math.random() > 0.35
+          spin: (Math.random() - 0.5) * 4.2,
+          petal: isPetal,
+          trail: []
         });
       }
     }
 
-    function addRipple(nx, ny, intensity = 1) {
+    function spawnTendrils(nx, ny, sample, count) {
+      for (let i = 0; i < count; i++) {
+        if (tendrils.length > 48) tendrils.shift();
+        const baseAngle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.45;
+        tendrils.push({
+          points: [{ x: nx, y: ny }],
+          angle: baseAngle,
+          turn: (Math.random() - 0.5) * 4.2,
+          speed: 0.09 + Math.random() * 0.09,
+          h: (sample.h + (Math.random() - 0.5) * 45 + 360) % 360,
+          s: clamp(sample.s + 0.25, 0.6, 1),
+          l: clamp(sample.l + 0.22, 0.62, 0.88),
+          life: 1,
+          growTime: 0.45 + Math.random() * 0.35,
+          age: 0
+        });
+      }
+    }
+
+    function addRipple(nx, ny, intensity = 1, options = {}) {
       const sample = samplePaintingAtNormalized(nx, ny);
       pointer.sample = sample;
       if (ripples.length >= MAX_RIPPLES) {
@@ -815,22 +852,31 @@
       }
       ripples.push({ x: nx, y: ny, age: 0, intensity });
 
-      if (rings.length >= 16) rings.shift();
-      rings.push({
+      if (blooms.length >= 18) blooms.shift();
+      const isSupernova = Boolean(options.supernova);
+      const isReverse = intensity < 0;
+      blooms.push({
         x: nx,
         y: ny,
-        radius: 6,
-        maxRadius: Math.min(viewportWidth, viewportHeight) * (0.22 + sample.edge * 0.14),
+        radius: isReverse ? 140 : 8,
+        growth: isReverse ? -220 : isSupernova ? 260 : 185,
+        petals: isSupernova ? 12 : 6 + Math.floor(sample.edge * 4),
+        rotation: Math.random() * Math.PI * 2,
         h: sample.h,
-        s: clamp(sample.s + 0.2, 0.55, 1),
+        s: clamp(sample.s + 0.25, 0.6, 1),
         l: clamp(sample.l + 0.2, 0.58, 0.88),
-        life: 1
+        life: 1,
+        decay: isSupernova ? 0.56 : 0.76,
+        supernova: isSupernova
       });
 
-      const sporeCount = currentMode === "bloom" ? 26 : 16;
-      spawnSpores(nx, ny, sample, sporeCount, currentMode === "portal" ? 0.55 : 1.15);
+      const sporeCount = isSupernova ? 46 : isReverse ? 18 : 22;
+      spawnSpores(nx, ny, sample, sporeCount, isSupernova ? 1.85 : isReverse ? 0.6 : 1.25);
+      spawnTendrils(nx, ny, sample, isSupernova ? 10 : 5);
       if (audio) {
-        audio.triggerResonance(sample, nx, currentMode);
+        if (isSupernova) audio.triggerSupernova(sample, nx, Math.abs(intensity));
+        else if (isReverse) audio.triggerEcho(sample, nx);
+        else audio.triggerResonance(sample, nx, "awaken");
       }
     }
 
@@ -910,7 +956,7 @@
       gl.uniform2f(fxLocations.uPointerVel, pointer.vx, -pointer.vy);
       gl.uniform1f(fxLocations.uPointerActive, pointer.active);
       gl.uniform1f(fxLocations.uHoldAmount, pointer.hold);
-      gl.uniform1i(fxLocations.uMode, MODE_INDEX[currentMode] ?? 0);
+      gl.uniform1f(fxLocations.uWarpEnergy, warpEnergy);
       gl.uniform4fv(fxLocations.uRipples, rippleUniformData);
       gl.uniform4fv(fxLocations.uTrails, trailUniformData);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -930,9 +976,9 @@
         const rp = ripples[i];
         rp.x = 0.5 + (rp.x - 0.5) * zoomFactor;
         rp.y = 0.5 + (rp.y - 0.5) * zoomFactor;
-        rp.age += dtSec * 1.1;
-        rp.intensity *= Math.pow(0.28, dtSec);
-        if (rp.intensity < 0.015 || rp.age > 2.4) {
+        rp.age += dtSec * 1.05;
+        rp.intensity *= Math.pow(0.32, dtSec);
+        if (Math.abs(rp.intensity) < 0.015 || rp.age > 2.6) {
           ripples.splice(i, 1);
         }
       }
@@ -942,36 +988,131 @@
         const tr = trails[i];
         tr.x = 0.5 + (tr.x - 0.5) * zoomFactor;
         tr.y = 0.5 + (tr.y - 0.5) * zoomFactor;
-        tr.life -= dtSec * (currentMode === "liquid" ? 0.85 : 1.15);
+        tr.life -= dtSec * 0.92;
         if (tr.life <= 0) {
           trails.splice(i, 1);
         }
       }
 
-      // Expanding color-sampled resonance rings in zoom-space
-      for (let i = rings.length - 1; i >= 0; i--) {
-        const ring = rings[i];
-        ring.x = 0.5 + (ring.x - 0.5) * zoomFactor;
-        ring.y = 0.5 + (ring.y - 0.5) * zoomFactor;
-        ring.radius = ring.radius * zoomFactor + dtSec * 165;
-        ring.life -= dtSec * 0.78;
-        if (ring.life <= 0) {
-          rings.splice(i, 1);
+      // Silky tapered bioluminescent cursor ribbon in zoom-space
+      for (let i = ribbonPoints.length - 1; i >= 0; i--) {
+        const pt = ribbonPoints[i];
+        pt.x = 0.5 + (pt.x - 0.5) * zoomFactor;
+        pt.y = 0.5 + (pt.y - 0.5) * zoomFactor;
+        pt.life -= dtSec * 1.85;
+        if (pt.life <= 0) ribbonPoints.splice(i, 1);
+      }
+      if (ribbonPoints.length > 2) {
+        overlayCtx.lineCap = "round";
+        overlayCtx.lineJoin = "round";
+        for (let i = 1; i < ribbonPoints.length; i++) {
+          const a = ribbonPoints[i - 1];
+          const b = ribbonPoints[i];
+          const t = b.life;
+          const ax = a.x * viewportWidth;
+          const ay = a.y * viewportHeight;
+          const bx = b.x * viewportWidth;
+          const by = b.y * viewportHeight;
+          if (Math.hypot(bx - ax, by - ay) > 220) continue;
+          overlayCtx.strokeStyle = hslToRgbaString(b.h, b.s, b.l, t * 0.52);
+          overlayCtx.lineWidth = Math.max(0.8, t * 6.5);
+          overlayCtx.beginPath();
+          overlayCtx.moveTo(ax, ay);
+          overlayCtx.lineTo(bx, by);
+          overlayCtx.stroke();
+
+          overlayCtx.strokeStyle = hslToRgbaString((b.h + 40) % 360, 0.95, 0.9, t * 0.35);
+          overlayCtx.lineWidth = Math.max(0.5, t * 2.1);
+          overlayCtx.beginPath();
+          overlayCtx.moveTo(ax, ay);
+          overlayCtx.lineTo(bx, by);
+          overlayCtx.stroke();
+        }
+      }
+
+      // Growing botanical light-tendrils locked in zoom-space
+      for (let i = tendrils.length - 1; i >= 0; i--) {
+        const td = tendrils[i];
+        td.age += dtSec;
+        td.life -= dtSec * 0.68;
+        for (let j = 0; j < td.points.length; j++) {
+          td.points[j].x = 0.5 + (td.points[j].x - 0.5) * zoomFactor;
+          td.points[j].y = 0.5 + (td.points[j].y - 0.5) * zoomFactor;
+        }
+        if (td.age < td.growTime && td.points.length < 18) {
+          const head = td.points[td.points.length - 1];
+          td.angle += td.turn * dtSec + Math.sin(elapsedTime * 6 + i) * 0.08;
+          td.points.push({
+            x: head.x + Math.cos(td.angle) * td.speed * dtSec,
+            y: head.y + Math.sin(td.angle) * td.speed * dtSec
+          });
+        }
+        if (td.life <= 0) {
+          tendrils.splice(i, 1);
           continue;
         }
-        const rx = ring.x * viewportWidth;
-        const ry = ring.y * viewportHeight;
+        if (td.points.length > 1) {
+          overlayCtx.beginPath();
+          overlayCtx.moveTo(td.points[0].x * viewportWidth, td.points[0].y * viewportHeight);
+          for (let j = 1; j < td.points.length; j++) {
+            overlayCtx.lineTo(td.points[j].x * viewportWidth, td.points[j].y * viewportHeight);
+          }
+          overlayCtx.strokeStyle = hslToRgbaString(td.h, td.s, td.l, td.life * 0.58);
+          overlayCtx.lineWidth = Math.max(0.7, td.life * 2.2);
+          overlayCtx.stroke();
+
+          const tip = td.points[td.points.length - 1];
+          overlayCtx.fillStyle = hslToRgbaString((td.h + 30) % 360, 1, 0.9, td.life * 0.85);
+          overlayCtx.beginPath();
+          overlayCtx.arc(tip.x * viewportWidth, tip.y * viewportHeight, 2.2 * td.life, 0, Math.PI * 2);
+          overlayCtx.fill();
+        }
+      }
+
+      // Ornate harmonic bloom mandalas & resonance rings in zoom-space
+      for (let i = blooms.length - 1; i >= 0; i--) {
+        const bl = blooms[i];
+        bl.x = 0.5 + (bl.x - 0.5) * zoomFactor;
+        bl.y = 0.5 + (bl.y - 0.5) * zoomFactor;
+        bl.radius = Math.max(2, bl.radius * zoomFactor + dtSec * bl.growth);
+        bl.rotation += dtSec * (bl.supernova ? 0.9 : 0.55);
+        bl.life -= dtSec * bl.decay;
+        if (bl.life <= 0) {
+          blooms.splice(i, 1);
+          continue;
+        }
+        const rx = bl.x * viewportWidth;
+        const ry = bl.y * viewportHeight;
+        const fade = Math.sin(Math.min(1, bl.life) * Math.PI * 0.5);
+
         overlayCtx.beginPath();
-        overlayCtx.arc(rx, ry, ring.radius, 0, Math.PI * 2);
-        overlayCtx.strokeStyle = hslToRgbaString(ring.h, ring.s, ring.l, ring.life * 0.55);
-        overlayCtx.lineWidth = 1.6 * ring.life;
+        overlayCtx.arc(rx, ry, bl.radius, 0, Math.PI * 2);
+        overlayCtx.strokeStyle = hslToRgbaString(bl.h, bl.s, bl.l, fade * 0.62);
+        overlayCtx.lineWidth = (bl.supernova ? 2.4 : 1.5) * fade;
         overlayCtx.stroke();
 
         overlayCtx.beginPath();
-        overlayCtx.arc(rx, ry, ring.radius * 0.72, 0, Math.PI * 2);
-        overlayCtx.strokeStyle = hslToRgbaString((ring.h + 38) % 360, ring.s, ring.l, ring.life * 0.25);
-        overlayCtx.lineWidth = 1;
+        overlayCtx.arc(rx, ry, bl.radius * 0.68, 0, Math.PI * 2);
+        overlayCtx.strokeStyle = hslToRgbaString((bl.h + 44) % 360, bl.s, 0.86, fade * 0.34);
+        overlayCtx.lineWidth = 1.1 * fade;
         overlayCtx.stroke();
+
+        // Blooming organic petal geometry
+        overlayCtx.save();
+        overlayCtx.translate(rx, ry);
+        overlayCtx.rotate(bl.rotation);
+        overlayCtx.strokeStyle = hslToRgbaString((bl.h + 22) % 360, bl.s, 0.88, fade * 0.38);
+        overlayCtx.lineWidth = 1.0;
+        const petalLen = bl.radius * 0.48;
+        for (let p = 0; p < bl.petals; p++) {
+          const a = (Math.PI * 2 * p) / bl.petals;
+          const cx = Math.cos(a) * petalLen;
+          const cy = Math.sin(a) * petalLen;
+          overlayCtx.beginPath();
+          overlayCtx.ellipse(cx, cy, petalLen * 0.42, petalLen * 0.14, a, 0, Math.PI * 2);
+          overlayCtx.stroke();
+        }
+        overlayCtx.restore();
       }
 
       // Living spores / fireflies / petals embedded inside the zooming architecture
@@ -980,28 +1121,29 @@
         sp.x = 0.5 + (sp.x - 0.5) * zoomFactor;
         sp.y = 0.5 + (sp.y - 0.5) * zoomFactor;
 
-        if (pointer.hold > 0.05 && currentMode === "portal") {
+        if (pointer.hold > 0.05) {
           const dx = pointer.x - sp.x;
           const dy = pointer.y - sp.y;
-          const dist = Math.hypot(dx, dy) + 0.02;
-          sp.vx += ((dx / dist) * 0.14 - (dy / dist) * 0.2) * pointer.hold * dtSec;
-          sp.vy += ((dy / dist) * 0.14 + (dx / dist) * 0.2) * pointer.hold * dtSec;
+          const dist = Math.hypot(dx, dy) + 0.018;
+          const pull = clamp(0.45 / (dist + 0.12), 0.18, 1.4);
+          sp.vx += ((dx / dist) * 0.34 - (dy / dist) * 0.52) * pull * pointer.hold * dtSec;
+          sp.vy += ((dy / dist) * 0.34 + (dx / dist) * 0.52) * pull * pointer.hold * dtSec;
         } else if (pointer.active > 0.1) {
           const dx = sp.x - pointer.x;
           const dy = sp.y - pointer.y;
           const dist = Math.hypot(dx, dy);
-          if (dist < 0.16 && dist > 0.001) {
-            const push = (0.16 - dist) * 0.35 * dtSec;
-            sp.vx += (dx / dist) * push + pointer.vx * 0.25;
-            sp.vy += (dy / dist) * push + pointer.vy * 0.25;
+          if (dist < 0.2 && dist > 0.001) {
+            const push = (0.2 - dist) * 0.45 * dtSec;
+            sp.vx += (dx / dist) * push + pointer.vx * 0.32;
+            sp.vy += (dy / dist) * push + pointer.vy * 0.32;
           }
         }
 
-        sp.x += sp.vx * dtSec + Math.sin(elapsedTime * 2.1 + sp.phase) * 0.004 * dtSec;
-        sp.y += sp.vy * dtSec + Math.cos(elapsedTime * 1.8 + sp.phase) * 0.004 * dtSec;
-        sp.vx *= Math.pow(0.22, dtSec);
-        sp.vy *= Math.pow(0.22, dtSec);
-        sp.size = clamp(sp.size * Math.pow(zoomFactor, 0.45), 1, 14);
+        sp.x += sp.vx * dtSec + Math.sin(elapsedTime * 2.4 + sp.phase) * 0.006 * dtSec;
+        sp.y += sp.vy * dtSec + Math.cos(elapsedTime * 2.0 + sp.phase) * 0.006 * dtSec;
+        sp.vx *= Math.pow(pointer.hold > 0.1 ? 0.58 : 0.28, dtSec);
+        sp.vy *= Math.pow(pointer.hold > 0.1 ? 0.58 : 0.28, dtSec);
+        sp.size = clamp(sp.size * Math.pow(zoomFactor, 0.42), 1, 15);
         sp.life -= sp.decay * dtSec;
 
         if (sp.life <= 0 || sp.x < -0.15 || sp.x > 1.15 || sp.y < -0.15 || sp.y > 1.15) {
@@ -1011,68 +1153,97 @@
 
         const sx = sp.x * viewportWidth;
         const sy = sp.y * viewportHeight;
-        const alpha = Math.sin(Math.min(1, sp.life) * Math.PI) * 0.85;
+        sp.trail.push({ x: sx, y: sy });
+        if (sp.trail.length > 6) sp.trail.shift();
 
-        const glow = overlayCtx.createRadialGradient(sx, sy, 0, sx, sy, sp.size * 3.4);
-        glow.addColorStop(0, hslToRgbaString(sp.h, sp.s, Math.min(0.95, sp.l + 0.12), alpha));
-        glow.addColorStop(0.45, hslToRgbaString(sp.h, sp.s, sp.l, alpha * 0.4));
+        const alpha = Math.sin(Math.min(1, sp.life) * Math.PI) * 0.9;
+
+        if (sp.trail.length > 1) {
+          overlayCtx.beginPath();
+          overlayCtx.moveTo(sp.trail[0].x, sp.trail[0].y);
+          for (let tIdx = 1; tIdx < sp.trail.length; tIdx++) {
+            overlayCtx.lineTo(sp.trail[tIdx].x, sp.trail[tIdx].y);
+          }
+          overlayCtx.strokeStyle = hslToRgbaString(sp.h, sp.s, 0.86, alpha * 0.36);
+          overlayCtx.lineWidth = Math.max(0.6, sp.size * 0.32);
+          overlayCtx.stroke();
+        }
+
+        const glow = overlayCtx.createRadialGradient(sx, sy, 0, sx, sy, sp.size * 3.6);
+        glow.addColorStop(0, hslToRgbaString(sp.h, sp.s, Math.min(0.95, sp.l + 0.14), alpha));
+        glow.addColorStop(0.45, hslToRgbaString(sp.h, sp.s, sp.l, alpha * 0.38));
         glow.addColorStop(1, hslToRgbaString(sp.h, sp.s, sp.l, 0));
         overlayCtx.fillStyle = glow;
         overlayCtx.beginPath();
-        overlayCtx.arc(sx, sy, sp.size * 3.4, 0, Math.PI * 2);
+        overlayCtx.arc(sx, sy, sp.size * 3.6, 0, Math.PI * 2);
         overlayCtx.fill();
 
         if (sp.petal) {
           overlayCtx.save();
           overlayCtx.translate(sx, sy);
-          overlayCtx.rotate(elapsedTime * 1.6 + sp.phase);
-          overlayCtx.fillStyle = hslToRgbaString(sp.h, sp.s, 0.9, alpha * 0.9);
+          overlayCtx.rotate(elapsedTime * sp.spin + sp.phase);
+          overlayCtx.fillStyle = hslToRgbaString(sp.h, sp.s, 0.92, alpha * 0.9);
           overlayCtx.beginPath();
-          overlayCtx.ellipse(0, 0, sp.size * 1.3, sp.size * 0.55, 0, 0, Math.PI * 2);
+          overlayCtx.ellipse(0, 0, sp.size * 1.45, sp.size * 0.55, 0, 0, Math.PI * 2);
           overlayCtx.fill();
           overlayCtx.restore();
         }
       }
 
-      // Delicate living filaments connecting awakened spores near the cursor
+      // Delicate bioluminescent neural filaments linking cursor & nearby spores
       if (pointer.active > 0.08 && spores.length > 0) {
-        const maxLinkDist = currentMode === "bloom" ? 155 : 125;
-        overlayCtx.lineWidth = 0.85;
+        const maxLinkDist = 145 + pointer.hold * 90;
+        overlayCtx.lineWidth = 0.9;
         for (let i = 0; i < spores.length; i++) {
           const sp = spores[i];
           const sx = sp.x * viewportWidth;
           const sy = sp.y * viewportHeight;
           const dist = Math.hypot(sx - px, sy - py);
           if (dist < maxLinkDist) {
-            const strength = (1 - dist / maxLinkDist) * pointer.active * sp.life * 0.42;
-            overlayCtx.strokeStyle = hslToRgbaString(sp.h, sp.s, 0.82, strength);
+            const strength = (1 - dist / maxLinkDist) * pointer.active * sp.life * (0.42 + pointer.hold * 0.35);
+            overlayCtx.strokeStyle = hslToRgbaString(sp.h, sp.s, 0.86, strength);
             overlayCtx.beginPath();
             overlayCtx.moveTo(px, py);
-            overlayCtx.lineTo(sx, sy);
+            const mx = (px + sx) * 0.5 + Math.sin(elapsedTime * 3 + sp.phase) * 14;
+            const my = (py + sy) * 0.5 + Math.cos(elapsedTime * 3 + sp.phase) * 14;
+            overlayCtx.quadraticCurveTo(mx, my, sx, sy);
             overlayCtx.stroke();
           }
         }
       }
 
-      // Organic living aura tinted live by the painting pixel under the pointer
-      if (pointer.active > 0.02) {
+      // Custom living organic cursor (fades gently when completely still)
+      const cursorVis = pointer.active * clamp(1 - (pointer.idleTime - 1.6) * 0.8, 0, 1);
+      if (cursorVis > 0.02) {
         const sample = pointer.sample;
-        const auraRadius = (currentMode === "portal" ? 62 : 44) + pointer.hold * 42 + sample.edge * 22;
+        const auraRadius = 46 + pointer.hold * 64 + sample.edge * 24;
         const grad = overlayCtx.createRadialGradient(px, py, 2, px, py, auraRadius);
-        grad.addColorStop(0, hslToRgbaString(sample.h, clamp(sample.s + 0.2, 0.5, 1), 0.86, 0.24 * pointer.active));
-        grad.addColorStop(0.5, hslToRgbaString((sample.h + 24) % 360, 0.8, 0.65, 0.09 * pointer.active));
+        grad.addColorStop(0, hslToRgbaString(sample.h, clamp(sample.s + 0.25, 0.55, 1), 0.88, 0.28 * cursorVis));
+        grad.addColorStop(0.45, hslToRgbaString((sample.h + 36) % 360, 0.88, 0.68, 0.11 * cursorVis));
         grad.addColorStop(1, "rgba(255, 255, 255, 0)");
         overlayCtx.fillStyle = grad;
         overlayCtx.beginPath();
         overlayCtx.arc(px, py, auraRadius, 0, Math.PI * 2);
         overlayCtx.fill();
 
-        // Fine center ring showing resonance color
+        const ringR = 8 + pointer.hold * 26 + Math.sin(elapsedTime * 5.2) * 1.6;
         overlayCtx.beginPath();
-        overlayCtx.arc(px, py, 7 + pointer.hold * 16 + Math.sin(elapsedTime * 5) * 1.5, 0, Math.PI * 2);
-        overlayCtx.strokeStyle = hslToRgbaString(sample.h, clamp(sample.s + 0.25, 0.55, 1), 0.88, 0.45 * pointer.active);
+        overlayCtx.arc(px, py, ringR, 0, Math.PI * 2);
+        overlayCtx.strokeStyle = hslToRgbaString(sample.h, clamp(sample.s + 0.28, 0.6, 1), 0.9, 0.58 * cursorVis);
         overlayCtx.lineWidth = 1.2;
         overlayCtx.stroke();
+
+        // Tiny orbiting sparks around the living cursor
+        const orbitCount = pointer.hold > 0.1 ? 6 : 3;
+        for (let k = 0; k < orbitCount; k++) {
+          const a = elapsedTime * (2.2 + pointer.hold * 3.5) + (Math.PI * 2 * k) / orbitCount;
+          const ox = px + Math.cos(a) * (ringR + 4);
+          const oy = py + Math.sin(a) * (ringR + 4);
+          overlayCtx.fillStyle = hslToRgbaString((sample.h + k * 28) % 360, 0.95, 0.92, 0.78 * cursorVis);
+          overlayCtx.beginPath();
+          overlayCtx.arc(ox, oy, 1.5 + pointer.hold * 1.1, 0, Math.PI * 2);
+          overlayCtx.fill();
+        }
       }
 
       overlayCtx.globalCompositeOperation = "source-over";
@@ -1097,10 +1268,16 @@
       pointer.vy = (pointer.y - prevY) * 0.65 + pointer.vy * 0.35;
       pointer.active += ((pointer.isInside ? 1 : 0) - pointer.active) * (1 - Math.exp(-dtSec * 6));
       pointer.hold += ((pointer.isDown ? 1 : 0) - pointer.hold) * (1 - Math.exp(-dtSec * 7));
+      if (pointer.isDown) {
+        pointer.holdDuration += dtSec;
+        pointer.idleTime = 0;
+      } else {
+        pointer.idleTime += dtSec;
+      }
 
       // Gentle organic parallax steering as pointer explores the painting
       if (pointer.isInside) {
-        const parallaxStrength = pointer.isDown ? 0.075 : 0.028;
+        const parallaxStrength = pointer.isDown ? 0.088 : 0.036;
         targetPanX = (0.5 - pointer.x) * baseWidth * parallaxStrength;
         targetPanY = (0.5 - pointer.y) * baseHeight * parallaxStrength;
       } else {
@@ -1111,15 +1288,17 @@
       panX += (targetPanX - panX) * panEase;
       panY += (targetPanY - panY) * panEase;
 
-      // Holding gently slows zoom time so you can inspect & sculpt any detail
-      const timeDilation = 1 - pointer.hold * 0.72;
+      // Holding slows zoom time so you can sculpt the spacetime vortex
+      const timeDilation = 1 - pointer.hold * 0.8;
 
       let deltaPosition = 0;
       const stepUnit = 3e-4 * deltaMs;
       if (wheelNudge !== 0) {
         deltaPosition += wheelNudge / 1500;
+        warpEnergy = Math.min(1.2, warpEnergy + Math.abs(wheelNudge) / 950);
         wheelNudge = 0;
       }
+      warpEnergy *= Math.pow(0.06, dtSec);
       if (touchVelocity !== 0) {
         deltaPosition += touchVelocity / 2000;
         if (!touching) {
@@ -1186,11 +1365,16 @@
         finishWebGLPostProcess();
       }
 
-      // Ambient spores while holding or in Bloom mode
-      if (pointer.isInside && (pointer.hold > 0.2 || currentMode === "bloom") && Math.random() < (pointer.hold > 0.2 ? 0.45 : 0.18)) {
+      // Living spores while holding + gentle autonomous dream motes from the depth tunnel
+      if (pointer.isInside && pointer.hold > 0.15 && Math.random() < 0.65) {
         const sample = samplePaintingAtNormalized(pointer.x, pointer.y);
         pointer.sample = sample;
-        spawnSpores(pointer.x, pointer.y, sample, 1, 0.55);
+        spawnSpores(pointer.x, pointer.y, sample, 2, 0.65);
+      } else if (startLoaded && spores.length < 18 && Math.random() < 0.045) {
+        const rx = 0.36 + Math.random() * 0.28;
+        const ry = 0.36 + Math.random() * 0.28;
+        const sample = samplePaintingAtNormalized(rx, ry);
+        spawnSpores(rx, ry, sample, 1, 0.25, "mixed");
       }
 
       const zoomFactor = Math.pow(2, actualDelta);
@@ -1259,12 +1443,6 @@
       updateLayout();
     });
 
-    function setMode(nextMode) {
-      if (MODE_INDEX[nextMode] === undefined) return;
-      currentMode = nextMode;
-      bodyElement.dataset.mode = nextMode;
-    }
-
     let lastMoveSampleAt = 0;
     function onPointerMove(clientX, clientY) {
       const nx = clamp(clientX / Math.max(viewportWidth, 1), 0, 1);
@@ -1273,42 +1451,67 @@
       pointer.targetX = nx;
       pointer.targetY = ny;
       pointer.isInside = true;
+      pointer.idleTime = 0;
 
       const now = performance.now();
-      if (moveDist > 0.008) {
-        addTrailPoint(nx, ny, moveDist * 18);
+      if (moveDist > 0.006) {
+        addTrailPoint(nx, ny, moveDist * 22);
+        const curSample = pointer.sample;
+        ribbonPoints.push({
+          x: nx,
+          y: ny,
+          h: curSample.h,
+          s: clamp(curSample.s + 0.25, 0.6, 1),
+          l: clamp(curSample.l + 0.22, 0.62, 0.9),
+          life: 1
+        });
+        if (ribbonPoints.length > 42) ribbonPoints.shift();
       }
-      if (now - lastMoveSampleAt > 55) {
+      if (now - lastMoveSampleAt > 42) {
         lastMoveSampleAt = now;
         const sample = samplePaintingAtNormalized(nx, ny);
         pointer.sample = sample;
 
-        if (moveDist > 0.012 && (sample.edge > 0.22 || currentMode === "bloom" || pointer.isDown)) {
-          spawnSpores(nx, ny, sample, currentMode === "bloom" ? 3 : 1, 0.45 + moveDist * 10);
+        if (moveDist > 0.009) {
+          const burstCount = pointer.isDown ? 3 : sample.edge > 0.2 ? 2 : 1;
+          spawnSpores(nx, ny, sample, burstCount, 0.55 + moveDist * 12);
         }
-        if (audio && moveDist > 0.018 && sample.edge > 0.24) {
-          audio.triggerGlideSpark(sample, nx, clamp(moveDist * 22, 0.2, 1.5));
+        if (audio && moveDist > 0.014 && sample.edge > 0.2) {
+          audio.triggerGlideSpark(sample, nx, clamp(moveDist * 24, 0.25, 1.6));
         }
       }
     }
 
-    function onPointerDown(clientX, clientY) {
+    function onPointerDown(clientX, clientY, isSecondary = false) {
       const nx = clamp(clientX / Math.max(viewportWidth, 1), 0, 1);
       const ny = clamp(clientY / Math.max(viewportHeight, 1), 0, 1);
       pointer.targetX = nx;
       pointer.targetY = ny;
       pointer.isInside = true;
-      pointer.isDown = true;
-      addRipple(nx, ny, 1.1);
+      pointer.idleTime = 0;
+      if (isSecondary) {
+        addRipple(nx, ny, -1.25);
+        wheelNudge -= 280;
+      } else {
+        pointer.isDown = true;
+        pointer.holdDuration = 0;
+        addRipple(nx, ny, 1.18);
+      }
     }
 
     function onPointerUp() {
+      if (pointer.isDown && pointer.holdDuration > 0.34) {
+        const power = clamp(1.15 + pointer.holdDuration * 0.65, 1.2, 2.2);
+        addRipple(pointer.x, pointer.y, power, { supernova: true });
+      }
       pointer.isDown = false;
+      pointer.holdDuration = 0;
     }
 
     function onPointerLeave() {
       pointer.isInside = false;
       pointer.isDown = false;
+      pointer.holdDuration = 0;
     }
 
     updateLayout();
@@ -1321,10 +1524,10 @@
         speed,
         maxspeed: maxSpeed,
         playing,
-        mode: currentMode,
         renderer,
         activeRipples: ripples.length,
-        activeSpores: spores.length
+        activeSpores: spores.length,
+        activeBlooms: blooms.length
       }),
       setSpeed(nextSpeed) {
         speed = Math.max(-maxSpeed, Math.min(maxSpeed, Number(nextSpeed)));
@@ -1332,13 +1535,12 @@
       setPlaying(nextPlaying) {
         playing = Boolean(nextPlaying);
       },
-      setMode,
       onPointerMove,
       onPointerDown,
       onPointerUp,
       onPointerLeave,
-      triggerPulse(nx, ny) {
-        addRipple(nx, ny, 1.15);
+      triggerPulse(nx = 0.5, ny = 0.5, supernova = false) {
+        addRipple(nx, ny, supernova ? 1.65 : 1.18, { supernova });
       },
       setDirection(direction, active) {
         directions[direction] = active;
@@ -1357,99 +1559,28 @@
   }
 
   function attachCanvasControls(player, canvas, config, audio) {
-    const bodyElement = document.body;
-    const hudElement = document.getElementById("art-hud");
-    const hintElement = document.getElementById("art-hint");
-    const playButton = document.getElementById("btn-play");
-    const speedSlider = document.getElementById("speed-slider");
-    const audioButton = document.getElementById("btn-audio");
-    const fullscreenButton = document.getElementById("btn-fullscreen");
-    const modeButtons = Array.from(document.querySelectorAll(".mode-btn[data-mode]"));
-
-    let cursorTimer;
-    let hudIdleTimer;
     let wakeLock = null;
     let lastTouchY = null;
-    let hintDismissed = false;
 
     canvas.tabIndex = 0;
     canvas.setAttribute("aria-label", "Interactive infinitely zooming painting.");
 
-    function dismissHint() {
-      if (hintDismissed || !hintElement) return;
-      hintDismissed = true;
-      hintElement.classList.add("is-hidden");
-    }
+    canvas.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+    });
 
-    window.setTimeout(dismissHint, 7500);
-
-    function syncHud() {
-      const state = player.getState();
-      if (playButton) {
-        playButton.classList.toggle("is-paused", !state.playing);
-        playButton.setAttribute("aria-pressed", String(!state.playing));
-      }
-      if (speedSlider && document.activeElement !== speedSlider) {
-        speedSlider.value = String(state.speed);
-      }
-      for (const button of modeButtons) {
-        const active = button.dataset.mode === state.mode;
-        button.classList.toggle("is-active", active);
-        button.setAttribute("aria-pressed", String(active));
-      }
-      if (audioButton && audio) {
-        const enabled = audio.isEnabled();
-        audioButton.classList.toggle("is-muted", !enabled);
-        audioButton.setAttribute("aria-pressed", String(enabled));
-      }
-    }
-
-    function isInteractiveTarget(target) {
-      return target && target.closest
-        ? target.closest('input, button, a, textarea, select, [role="button"], [role="slider"], [contenteditable]')
-        : null;
-    }
-
-    for (const button of modeButtons) {
-      button.addEventListener("click", () => {
-        player.setMode(button.dataset.mode);
-        dismissHint();
-        syncHud();
-      });
-    }
-
-    if (playButton) {
-      playButton.addEventListener("click", () => {
-        player.setPlaying(!player.getState().playing);
-        syncHud();
-      });
-    }
-
-    if (speedSlider) {
-      speedSlider.addEventListener("input", () => {
-        player.setSpeed(Number(speedSlider.value));
-        player.setPlaying(true);
-        syncHud();
-      });
-    }
-
-    if (audioButton && audio) {
-      audioButton.addEventListener("click", () => {
-        audio.setEnabled(!audio.isEnabled());
-        syncHud();
-      });
-    }
-
-    // Canvas pointer interaction (hover awakening, click resonance, hold lens/drag)
     canvas.addEventListener("pointermove", (event) => {
       player.onPointerMove(event.clientX, event.clientY);
     });
 
     canvas.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0 && event.pointerType === "mouse") return;
-      dismissHint();
       if (audio) audio.unlock();
-      player.onPointerDown(event.clientX, event.clientY);
+      if (event.pointerType === "mouse" && event.button === 2) {
+        player.onPointerDown(event.clientX, event.clientY, true);
+        return;
+      }
+      if (event.button !== 0 && event.pointerType === "mouse") return;
+      player.onPointerDown(event.clientX, event.clientY, false);
     });
 
     window.addEventListener("pointerup", () => {
@@ -1461,34 +1592,20 @@
     });
 
     document.addEventListener("keydown", (event) => {
-      if (isInteractiveTarget(event.target)) return;
       if (event.code === "Space") {
         event.preventDefault();
         if (!event.repeat) {
           player.setPlaying(!player.getState().playing);
-          syncHud();
         }
-      } else if (event.key === "1") {
-        player.setMode("awaken");
-        syncHud();
-      } else if (event.key === "2") {
-        player.setMode("liquid");
-        syncHud();
-      } else if (event.key === "3") {
-        player.setMode("portal");
-        syncHud();
-      } else if (event.key === "4") {
-        player.setMode("bloom");
-        syncHud();
       } else if (event.key === "m" || event.key === "M") {
         if (audio) {
           audio.setEnabled(!audio.isEnabled());
-          syncHud();
         }
       } else if (event.key === "f" || event.key === "F") {
         toggleFullscreen();
-      } else if (event.key === "h" || event.key === "H") {
-        bodyElement.classList.toggle("hud-hidden");
+      } else if (event.key === "r" || event.key === "R") {
+        if (audio) audio.unlock();
+        player.triggerPulse(0.5, 0.5, true);
       } else if (config.keyboardmovementenabled && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
         event.preventDefault();
         player.setDirection(event.key === "ArrowUp" ? "up" : "down", true);
@@ -1520,14 +1637,15 @@
       canvas.addEventListener(
         "touchstart",
         (event) => {
-          dismissHint();
           if (audio) audio.unlock();
           if (event.touches.length === 1) {
             const touch = event.touches[0];
-            player.onPointerDown(touch.clientX, touch.clientY);
+            player.onPointerDown(touch.clientX, touch.clientY, false);
             lastTouchY = null;
           } else if (event.touches.length >= 2) {
             lastTouchY = (event.touches[0].clientY + event.touches[1].clientY) / 2;
+            const mx = (event.touches[0].clientX + event.touches[1].clientX) / 2;
+            player.onPointerDown(mx, lastTouchY, true);
           }
         },
         { passive: true }
@@ -1574,15 +1692,9 @@
     }
 
     canvas.addEventListener("dblclick", toggleFullscreen);
-    if (fullscreenButton) {
-      fullscreenButton.addEventListener("click", toggleFullscreen);
-    }
 
     async function onFullscreenChange() {
       const isFullscreen = Boolean(document.fullscreenElement || document.webkitFullscreenElement);
-      if (fullscreenButton) {
-        fullscreenButton.setAttribute("aria-pressed", String(isFullscreen));
-      }
       if (isFullscreen) {
         try {
           wakeLock = await navigator.wakeLock?.request("screen");
@@ -1596,26 +1708,6 @@
 
     document.addEventListener("fullscreenchange", onFullscreenChange);
     document.addEventListener("webkitfullscreenchange", onFullscreenChange);
-
-    function resetCursorHideTimer() {
-      clearTimeout(cursorTimer);
-      clearTimeout(hudIdleTimer);
-      bodyElement.classList.remove("cursorhidden");
-      bodyElement.classList.remove("hud-idle");
-      cursorTimer = setTimeout(() => {
-        if (hudElement && hudElement.matches(":hover")) return;
-        bodyElement.classList.add("cursorhidden");
-      }, 1800);
-      hudIdleTimer = setTimeout(() => {
-        if (hudElement && hudElement.matches(":hover")) return;
-        bodyElement.classList.add("hud-idle");
-      }, 2600);
-    }
-
-    document.addEventListener("pointermove", resetCursorHideTimer, { passive: true });
-    document.addEventListener("keydown", resetCursorHideTimer);
-    syncHud();
-    resetCursorHideTimer();
   }
 
   const zoomConfig = JSON.parse(document.querySelector("#zoom-config").textContent);
