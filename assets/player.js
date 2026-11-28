@@ -139,6 +139,23 @@
       sample: { r: 140, g: 190, b: 255, h: 215, s: 0.85, l: 0.72, edge: 0.4 }
     };
 
+    const secondaryHand = {
+      x: 0.5,
+      y: 0.5,
+      targetX: 0.5,
+      targetY: 0.5,
+      active: 0,
+      isInside: false,
+      isDown: false,
+      hold: 0,
+      sample: { r: 140, g: 190, b: 255, h: 215, s: 0.85, l: 0.72, edge: 0.4 }
+    };
+
+    let lastDirectPointerAt = -10000;
+    let directPointerDown = false;
+    let handDrivingPointer = false;
+    let handRoutedToSecondary = false;
+
     let panX = 0;
     let panY = 0;
     let targetPanX = 0;
@@ -151,6 +168,7 @@
     const spores = [];
     const blooms = [];
     const ribbonPoints = [];
+    const secondaryRibbonPoints = [];
     const tendrils = [];
     const rippleUniformData = new Float32Array(MAX_RIPPLES * 4);
     const trailUniformData = new Float32Array(MAX_TRAILS * 4);
@@ -995,38 +1013,42 @@
       }
 
       // Silky tapered bioluminescent cursor ribbon in zoom-space
-      for (let i = ribbonPoints.length - 1; i >= 0; i--) {
-        const pt = ribbonPoints[i];
-        pt.x = 0.5 + (pt.x - 0.5) * zoomFactor;
-        pt.y = 0.5 + (pt.y - 0.5) * zoomFactor;
-        pt.life -= dtSec * 1.85;
-        if (pt.life <= 0) ribbonPoints.splice(i, 1);
-      }
-      if (ribbonPoints.length > 2) {
-        overlayCtx.lineCap = "round";
-        overlayCtx.lineJoin = "round";
-        for (let i = 1; i < ribbonPoints.length; i++) {
-          const a = ribbonPoints[i - 1];
-          const b = ribbonPoints[i];
-          const t = b.life;
-          const ax = a.x * viewportWidth;
-          const ay = a.y * viewportHeight;
-          const bx = b.x * viewportWidth;
-          const by = b.y * viewportHeight;
-          if (Math.hypot(bx - ax, by - ay) > 220) continue;
-          overlayCtx.strokeStyle = hslToRgbaString(b.h, b.s, b.l, t * 0.52);
-          overlayCtx.lineWidth = Math.max(0.8, t * 6.5);
-          overlayCtx.beginPath();
-          overlayCtx.moveTo(ax, ay);
-          overlayCtx.lineTo(bx, by);
-          overlayCtx.stroke();
+      const ribbonStreams = [ribbonPoints, secondaryRibbonPoints];
+      for (let sIdx = 0; sIdx < ribbonStreams.length; sIdx++) {
+        const stream = ribbonStreams[sIdx];
+        for (let i = stream.length - 1; i >= 0; i--) {
+          const pt = stream[i];
+          pt.x = 0.5 + (pt.x - 0.5) * zoomFactor;
+          pt.y = 0.5 + (pt.y - 0.5) * zoomFactor;
+          pt.life -= dtSec * 1.85;
+          if (pt.life <= 0) stream.splice(i, 1);
+        }
+        if (stream.length > 2) {
+          overlayCtx.lineCap = "round";
+          overlayCtx.lineJoin = "round";
+          for (let i = 1; i < stream.length; i++) {
+            const a = stream[i - 1];
+            const b = stream[i];
+            const t = b.life;
+            const ax = a.x * viewportWidth;
+            const ay = a.y * viewportHeight;
+            const bx = b.x * viewportWidth;
+            const by = b.y * viewportHeight;
+            if (Math.hypot(bx - ax, by - ay) > 220) continue;
+            overlayCtx.strokeStyle = hslToRgbaString(b.h, b.s, b.l, t * 0.52);
+            overlayCtx.lineWidth = Math.max(0.8, t * 6.5);
+            overlayCtx.beginPath();
+            overlayCtx.moveTo(ax, ay);
+            overlayCtx.lineTo(bx, by);
+            overlayCtx.stroke();
 
-          overlayCtx.strokeStyle = hslToRgbaString((b.h + 40) % 360, 0.95, 0.9, t * 0.35);
-          overlayCtx.lineWidth = Math.max(0.5, t * 2.1);
-          overlayCtx.beginPath();
-          overlayCtx.moveTo(ax, ay);
-          overlayCtx.lineTo(bx, by);
-          overlayCtx.stroke();
+            overlayCtx.strokeStyle = hslToRgbaString((b.h + 40) % 360, 0.95, 0.9, t * 0.35);
+            overlayCtx.lineWidth = Math.max(0.5, t * 2.1);
+            overlayCtx.beginPath();
+            overlayCtx.moveTo(ax, ay);
+            overlayCtx.lineTo(bx, by);
+            overlayCtx.stroke();
+          }
         }
       }
 
@@ -1246,6 +1268,30 @@
         }
       }
 
+      // Matching organic bioluminescent aura for a second hand in camera view
+      if (secondaryHand.active > 0.03) {
+        const shx = secondaryHand.x * viewportWidth;
+        const shy = secondaryHand.y * viewportHeight;
+        const sSample = secondaryHand.sample;
+        const sVis = secondaryHand.active;
+        const sAura = 42 + secondaryHand.hold * 54 + sSample.edge * 20;
+        const sGrad = overlayCtx.createRadialGradient(shx, shy, 2, shx, shy, sAura);
+        sGrad.addColorStop(0, hslToRgbaString(sSample.h, clamp(sSample.s + 0.25, 0.55, 1), 0.88, 0.24 * sVis));
+        sGrad.addColorStop(0.45, hslToRgbaString((sSample.h + 36) % 360, 0.88, 0.68, 0.1 * sVis));
+        sGrad.addColorStop(1, "rgba(255, 255, 255, 0)");
+        overlayCtx.fillStyle = sGrad;
+        overlayCtx.beginPath();
+        overlayCtx.arc(shx, shy, sAura, 0, Math.PI * 2);
+        overlayCtx.fill();
+
+        const sRingR = 7 + secondaryHand.hold * 22 + Math.sin(elapsedTime * 5.2 + 1.4) * 1.5;
+        overlayCtx.beginPath();
+        overlayCtx.arc(shx, shy, sRingR, 0, Math.PI * 2);
+        overlayCtx.strokeStyle = hslToRgbaString(sSample.h, clamp(sSample.s + 0.28, 0.6, 1), 0.9, 0.52 * sVis);
+        overlayCtx.lineWidth = 1.1;
+        overlayCtx.stroke();
+      }
+
       overlayCtx.globalCompositeOperation = "source-over";
     }
 
@@ -1274,6 +1320,11 @@
       } else {
         pointer.idleTime += dtSec;
       }
+
+      secondaryHand.x += (secondaryHand.targetX - secondaryHand.x) * smooth;
+      secondaryHand.y += (secondaryHand.targetY - secondaryHand.y) * smooth;
+      secondaryHand.active += ((secondaryHand.isInside ? 1 : 0) - secondaryHand.active) * (1 - Math.exp(-dtSec * 6));
+      secondaryHand.hold += ((secondaryHand.isDown ? 1 : 0) - secondaryHand.hold) * (1 - Math.exp(-dtSec * 7));
 
       // Gentle organic parallax steering as pointer explores the painting
       if (pointer.isInside) {
@@ -1444,9 +1495,8 @@
     });
 
     let lastMoveSampleAt = 0;
-    function onPointerMove(clientX, clientY) {
-      const nx = clamp(clientX / Math.max(viewportWidth, 1), 0, 1);
-      const ny = clamp(clientY / Math.max(viewportHeight, 1), 0, 1);
+    let lastSecondarySampleAt = 0;
+    function applyPrimaryNormalizedMove(nx, ny) {
       const moveDist = Math.hypot(nx - pointer.targetX, ny - pointer.targetY);
       pointer.targetX = nx;
       pointer.targetY = ny;
@@ -1482,7 +1532,17 @@
       }
     }
 
+    function onPointerMove(clientX, clientY) {
+      lastDirectPointerAt = performance.now();
+      handDrivingPointer = false;
+      const nx = clamp(clientX / Math.max(viewportWidth, 1), 0, 1);
+      const ny = clamp(clientY / Math.max(viewportHeight, 1), 0, 1);
+      applyPrimaryNormalizedMove(nx, ny);
+    }
+
     function onPointerDown(clientX, clientY, isSecondary = false) {
+      lastDirectPointerAt = performance.now();
+      handDrivingPointer = false;
       const nx = clamp(clientX / Math.max(viewportWidth, 1), 0, 1);
       const ny = clamp(clientY / Math.max(viewportHeight, 1), 0, 1);
       pointer.targetX = nx;
@@ -1493,6 +1553,7 @@
         addRipple(nx, ny, -1.25);
         wheelNudge -= 280;
       } else {
+        directPointerDown = true;
         pointer.isDown = true;
         pointer.holdDuration = 0;
         addRipple(nx, ny, 1.18);
@@ -1500,6 +1561,7 @@
     }
 
     function onPointerUp() {
+      directPointerDown = false;
       if (pointer.isDown && pointer.holdDuration > 0.34) {
         const power = clamp(1.15 + pointer.holdDuration * 0.65, 1.2, 2.2);
         addRipple(pointer.x, pointer.y, power, { supernova: true });
@@ -1509,9 +1571,92 @@
     }
 
     function onPointerLeave() {
+      directPointerDown = false;
       pointer.isInside = false;
       pointer.isDown = false;
       pointer.holdDuration = 0;
+    }
+
+    function updateSecondaryHand(state = {}) {
+      if (!state.active) {
+        secondaryHand.isInside = false;
+        secondaryHand.isDown = false;
+        return;
+      }
+      const nx = clamp(state.x, 0, 1);
+      const ny = clamp(state.y, 0, 1);
+      const moveDist = Math.hypot(nx - secondaryHand.targetX, ny - secondaryHand.targetY);
+      secondaryHand.targetX = nx;
+      secondaryHand.targetY = ny;
+      secondaryHand.isInside = true;
+      secondaryHand.isDown = Boolean(state.holding);
+
+      const now = performance.now();
+      if (moveDist > 0.007) {
+        addTrailPoint(nx, ny, moveDist * 22);
+        const curSample = secondaryHand.sample;
+        secondaryRibbonPoints.push({
+          x: nx,
+          y: ny,
+          h: curSample.h,
+          s: clamp(curSample.s + 0.25, 0.6, 1),
+          l: clamp(curSample.l + 0.22, 0.62, 0.9),
+          life: 1
+        });
+        if (secondaryRibbonPoints.length > 38) secondaryRibbonPoints.shift();
+      }
+      if (now - lastSecondarySampleAt > 56) {
+        lastSecondarySampleAt = now;
+        const sample = samplePaintingAtNormalized(nx, ny);
+        secondaryHand.sample = sample;
+        if (moveDist > 0.01) {
+          spawnSpores(nx, ny, sample, secondaryHand.isDown ? 2 : 1, 0.55 + moveDist * 10);
+        }
+      }
+    }
+
+    function updateHandPointer(state = {}) {
+      const nx = clamp(state.x, 0, 1);
+      const ny = clamp(state.y, 0, 1);
+      const now = performance.now();
+      // Yield primary pointer while user is actively using mouse/touch, route hand as secondary organic stream
+      if (directPointerDown || now - lastDirectPointerAt < 1400) {
+        handRoutedToSecondary = true;
+        updateSecondaryHand({ active: true, x: nx, y: ny, holding: state.holding, speedNorm: state.speedNorm });
+        return;
+      }
+
+      if (handRoutedToSecondary) {
+        handRoutedToSecondary = false;
+        secondaryHand.isInside = false;
+        secondaryHand.isDown = false;
+      }
+
+      handDrivingPointer = true;
+      applyPrimaryNormalizedMove(nx, ny);
+      const nextHolding = Boolean(state.holding);
+      if (nextHolding && !pointer.isDown) {
+        pointer.isDown = true;
+        pointer.holdDuration = 0;
+      } else if (!nextHolding && pointer.isDown) {
+        pointer.isDown = false;
+        pointer.holdDuration = 0;
+      }
+    }
+
+    function releaseHand() {
+      if (handRoutedToSecondary) {
+        handRoutedToSecondary = false;
+        secondaryHand.isInside = false;
+        secondaryHand.isDown = false;
+      }
+      if (!handDrivingPointer) return;
+      handDrivingPointer = false;
+      if (!directPointerDown && performance.now() - lastDirectPointerAt > 1400) {
+        pointer.isInside = false;
+        pointer.isDown = false;
+        pointer.holdDuration = 0;
+      }
     }
 
     updateLayout();
@@ -1539,8 +1684,12 @@
       onPointerDown,
       onPointerUp,
       onPointerLeave,
-      triggerPulse(nx = 0.5, ny = 0.5, supernova = false) {
-        addRipple(nx, ny, supernova ? 1.65 : 1.18, { supernova });
+      updateHandPointer,
+      updateSecondaryHand,
+      releaseHand,
+      triggerPulse(nx = 0.5, ny = 0.5, supernova = false, reverse = false) {
+        const intensity = reverse ? -1.25 : supernova ? 1.65 : 1.18;
+        addRipple(nx, ny, intensity, { supernova: !reverse && supernova });
       },
       setDirection(direction, active) {
         directions[direction] = active;
@@ -1558,7 +1707,7 @@
     };
   }
 
-  function attachCanvasControls(player, canvas, config, audio) {
+  function attachCanvasControls(player, canvas, config, audio, cameraController) {
     let wakeLock = null;
     let lastTouchY = null;
 
@@ -1575,6 +1724,7 @@
 
     canvas.addEventListener("pointerdown", (event) => {
       if (audio) audio.unlock();
+      if (cameraController) cameraController.onUserGesture();
       if (event.pointerType === "mouse" && event.button === 2) {
         player.onPointerDown(event.clientX, event.clientY, true);
         return;
@@ -1606,6 +1756,10 @@
       } else if (event.key === "r" || event.key === "R") {
         if (audio) audio.unlock();
         player.triggerPulse(0.5, 0.5, true);
+      } else if (event.key === "c" || event.key === "C") {
+        if (cameraController) {
+          cameraController.toggle();
+        }
       } else if (config.keyboardmovementenabled && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
         event.preventDefault();
         player.setDirection(event.key === "ArrowUp" ? "up" : "down", true);
@@ -1638,6 +1792,7 @@
         "touchstart",
         (event) => {
           if (audio) audio.unlock();
+          if (cameraController) cameraController.onUserGesture();
           if (event.touches.length === 1) {
             const touch = event.touches[0];
             player.onPointerDown(touch.clientX, touch.clientY, false);
@@ -1716,9 +1871,16 @@
   try {
     const audio = window.createOrganicAudio ? window.createOrganicAudio() : null;
     const player = createZoomPlayer({ ...zoomConfig, canvas: canvasElement, overlayCanvas: overlayElement, audio });
-    attachCanvasControls(player, canvasElement, zoomConfig, audio);
+    const cameraController = window.createCameraGestureController
+      ? window.createCameraGestureController({ player, audio })
+      : null;
+    attachCanvasControls(player, canvasElement, zoomConfig, audio, cameraController);
+    if (cameraController) {
+      cameraController.start();
+    }
     window.zoomPlayer = player;
     window.organicAudio = audio;
+    window.cameraController = cameraController;
   } catch (error) {
     document.body.classList.remove("loading");
     console.error(error);
